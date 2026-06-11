@@ -1,98 +1,216 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useEffect, useState } from "react";
+import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+type TimerMode = "Focus" | "Short Break" | "Long Break";
+
+const modeDurations: Record<TimerMode, number> = {
+  Focus: 60 * 60,
+  "Short Break": 5 * 60,
+  "Long Break": 15 * 60,
+};
+
+const timerModes: TimerMode[] = ["Focus", "Short Break", "Long Break"];
+
+function formatTime(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [selectedMode, setSelectedMode] = useState<TimerMode>("Focus");
+  const [secondsLeft, setSecondsLeft] = useState(modeDurations.Focus);
+  const [isRunning, setIsRunning] = useState(false);
+  const [completedFocusSessions, setCompletedFocusSessions] = useState(0);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      setSecondsLeft((currentSeconds) => {
+        if (currentSeconds <= 1) {
+          setIsRunning(false);
+
+          if (selectedMode === "Focus") {
+            setCompletedFocusSessions((currentCount) => currentCount + 1);
+          }
+
+          return 0;
+        }
+
+        return currentSeconds - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [isRunning, selectedMode]);
+
+  function selectMode(mode: TimerMode) {
+    setSelectedMode(mode);
+    setSecondsLeft(modeDurations[mode]);
+    setIsRunning(false);
+  }
+
+  function resetTimer() {
+    setSecondsLeft(modeDurations[selectedMode]);
+    setIsRunning(false);
+  }
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={styles.container}>
+        <Text style={styles.title}>Focus Timer</Text>
+        <Text style={styles.subtitle}>
+          Completed focus sessions: {completedFocusSessions}
+        </Text>
+
+        <View style={styles.modeRow}>
+          {timerModes.map((mode) => {
+            const isSelected = mode === selectedMode;
+
+            return (
+              <Pressable
+                key={mode}
+                style={[
+                  styles.modeButton,
+                  isSelected && styles.selectedModeButton,
+                ]}
+                onPress={() => selectMode(mode)}
+              >
+                <Text
+                  style={[
+                    styles.modeButtonText,
+                    isSelected && styles.selectedModeButtonText,
+                  ]}
+                >
+                  {mode}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.timerCircle}>
+          <Text style={styles.modeLabel}>{selectedMode}</Text>
+          <Text style={styles.timerText}>{formatTime(secondsLeft)}</Text>
+        </View>
+
+        <View style={styles.buttonRow}>
+          <Pressable
+            style={[styles.actionButton, styles.startButton]}
+            onPress={() => setIsRunning(true)}
+          >
+            <Text style={styles.actionButtonText}>Start</Text>
+          </Pressable>
+
+          <Pressable
+            style={styles.actionButton}
+            onPress={() => setIsRunning(false)}
+          >
+            <Text style={styles.actionButtonText}>Pause</Text>
+          </Pressable>
+
+          <Pressable style={styles.actionButton} onPress={resetTimer}>
+            <Text style={styles.actionButtonText}>Reset</Text>
+          </Pressable>
+        </View>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  screen: {
+    flex: 1,
+    backgroundColor: "#F6F7F9",
   },
-  stepContainer: {
-    gap: 8,
+  container: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 48,
+    alignItems: "center",
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: "700",
+    color: "#18212F",
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  subtitle: {
+    fontSize: 16,
+    color: "#667085",
+    marginBottom: 32,
+  },
+  modeRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 40,
+  },
+  modeButton: {
+    flex: 1,
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#D0D5DD",
+  },
+  selectedModeButton: {
+    backgroundColor: "#2F6FED",
+    borderColor: "#2F6FED",
+  },
+  modeButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#344054",
+  },
+  selectedModeButtonText: {
+    color: "#FFFFFF",
+  },
+  timerCircle: {
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 40,
+    borderWidth: 8,
+    borderColor: "#D7E3FF",
+  },
+  modeLabel: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#2F6FED",
+    marginBottom: 10,
+  },
+  timerText: {
+    fontSize: 56,
+    fontWeight: "700",
+    color: "#18212F",
+  },
+  buttonRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 10,
+  },
+  actionButton: {
+    flex: 1,
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: "center",
+    backgroundColor: "#344054",
+  },
+  startButton: {
+    backgroundColor: "#2F6FED",
+  },
+  actionButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "700",
   },
 });
