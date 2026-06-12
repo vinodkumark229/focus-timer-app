@@ -1,5 +1,9 @@
-import { useEffect, useState } from "react";
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { setAudioModeAsync, useAudioPlayer } from "expo-audio";
+import * as Haptics from "expo-haptics";
+import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+
+import { useSessionHistory } from "@/app/session-history";
 
 type TimerMode = "Focus" | "Short Break" | "Long Break";
 
@@ -15,6 +19,8 @@ const progressSegments = Array.from({ length: 120 }, (_, index) => index);
 const minimumFocusMinutes = 1;
 const maximumFocusMinutes = 180;
 const focusStepMinutes = 5;
+// Add assets/sounds/timer-bell.mp3 later if you want to replace this WAV fallback.
+const alertSound = require("@/assets/sounds/timer-bell.wav");
 
 function formatTime(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
@@ -23,36 +29,40 @@ function formatTime(totalSeconds: number) {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function formatStatDuration(totalSeconds: number) {
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-
-  if (hours > 0 && minutes > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-
-  if (hours > 0) {
-    return `${hours}h`;
-  }
-
-  return `${minutes}m`;
-}
-
 export default function HomeScreen() {
+  const { activities, addActivity, addBreakSeconds, addSession } = useSessionHistory();
+  const alertPlayer = useAudioPlayer(alertSound);
+  const warningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedMode, setSelectedMode] = useState<TimerMode>("Focus");
+  const [selectedActivityId, setSelectedActivityId] = useState("deep-work");
+  const [newActivityName, setNewActivityName] = useState("");
   const [focusDurationMinutes, setFocusDurationMinutes] = useState(60);
   const focusDurationSeconds = focusDurationMinutes * 60;
   const [secondsLeft, setSecondsLeft] = useState(focusDurationSeconds);
   const [isRunning, setIsRunning] = useState(false);
-  const [completedFocusSessions, setCompletedFocusSessions] = useState(0);
-  const [totalFocusSeconds, setTotalFocusSeconds] = useState(0);
-  const [totalBreakSeconds, setTotalBreakSeconds] = useState(0);
+  const [hasShownFiveMinuteWarning, setHasShownFiveMinuteWarning] = useState(false);
+  const [warningMessage, setWarningMessage] = useState("");
+  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
+  const [hasHandledCompletion, setHasHandledCompletion] = useState(false);
 
   const currentModeDurations: Record<TimerMode, number> = {
     Focus: focusDurationSeconds,
     "Short Break": modeDurations["Short Break"],
     "Long Break": modeDurations["Long Break"],
   };
+  const selectedActivity = activities.find(
+    (activity) => activity.id === selectedActivityId,
+  ) ?? activities[0];
+
+  useEffect(() => {
+    void setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+
+    return () => {
+      if (warningTimeoutRef.current) {
+        clearTimeout(warningTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isRunning) {
@@ -62,16 +72,6 @@ export default function HomeScreen() {
     const intervalId = setInterval(() => {
       setSecondsLeft((currentSeconds) => {
         if (currentSeconds <= 1) {
-          setIsRunning(false);
-          const completedDuration = currentModeDurations[selectedMode];
-
-          if (selectedMode === "Focus") {
-            setCompletedFocusSessions((currentCount) => currentCount + 1);
-            setTotalFocusSeconds((currentTotal) => currentTotal + completedDuration);
-          } else {
-            setTotalBreakSeconds((currentTotal) => currentTotal + completedDuration);
-          }
-
           return 0;
         }
 
@@ -80,17 +80,120 @@ export default function HomeScreen() {
     }, 1000);
 
     return () => clearInterval(intervalId);
-  }, [focusDurationSeconds, isRunning, selectedMode]);
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (
+      isRunning &&
+      secondsLeft === 300 &&
+      currentModeDurations[selectedMode] > 300 &&
+      !hasShownFiveMinuteWarning
+    ) {
+      setHasShownFiveMinuteWarning(true);
+      showFiveMinuteWarning();
+    }
+  }, [hasShownFiveMinuteWarning, isRunning, secondsLeft, selectedMode]);
+
+  useEffect(() => {
+    if (!isRunning || secondsLeft !== 0 || hasHandledCompletion) {
+      return;
+    }
+
+    setHasHandledCompletion(true);
+    handleTimerComplete();
+  }, [hasHandledCompletion, isRunning, secondsLeft]);
+
+  function clearWarningMessage() {
+    if (warningTimeoutRef.current) {
+      clearTimeout(warningTimeoutRef.current);
+      warningTimeoutRef.current = null;
+    }
+
+    setWarningMessage("");
+  }
+
+  function resetFiveMinuteWarning() {
+    setHasShownFiveMinuteWarning(false);
+    clearWarningMessage();
+  }
+
+  function showFiveMinuteWarning() {
+    setWarningMessage("5 minutes left.");
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+    if (warningTimeoutRef.current) {
+      clearTimeout(warningTimeoutRef.current);
+    }
+
+    warningTimeoutRef.current = setTimeout(() => {
+      setWarningMessage("");
+      warningTimeoutRef.current = null;
+    }, 3500);
+  }
+
+  async function playAlertSound() {
+    try {
+      await alertPlayer.seekTo(0);
+      alertPlayer.play();
+    } catch {
+      // Sound is best-effort so the timer never crashes if audio is unavailable.
+    }
+  }
+
+  async function playTimerCompleteFeedback() {
+    await playAlertSound();
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }
+
+  function handleTimerComplete() {
+    setIsRunning(false);
+    setHasShownFiveMinuteWarning(false);
+    clearWarningMessage();
+    void playTimerCompleteFeedback();
+
+    const completedDuration = currentModeDurations[selectedMode];
+    const endTime = new Date();
+    const startTime =
+      sessionStartTime ?? new Date(endTime.getTime() - completedDuration * 1000);
+
+    if (selectedMode === "Focus") {
+      addSession({
+        id: `${endTime.getTime()}`,
+        activityName: selectedActivity.name,
+        activityColor: selectedActivity.color,
+        startTime,
+        endTime,
+        durationSeconds: completedDuration,
+        durationMinutes: Math.round(completedDuration / 60),
+        dateLabel: endTime.toLocaleDateString([], {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }),
+        mode: "Focus",
+      });
+    } else {
+      addBreakSeconds(completedDuration);
+    }
+
+    setSessionStartTime(null);
+  }
 
   function selectMode(mode: TimerMode) {
     setSelectedMode(mode);
     setSecondsLeft(currentModeDurations[mode]);
     setIsRunning(false);
+    setSessionStartTime(null);
+    setHasHandledCompletion(false);
+    resetFiveMinuteWarning();
   }
 
   function resetTimer() {
     setSecondsLeft(currentModeDurations[selectedMode]);
     setIsRunning(false);
+    setSessionStartTime(null);
+    setHasHandledCompletion(false);
+    resetFiveMinuteWarning();
   }
 
   function updateFocusDuration(durationMinutes: number) {
@@ -104,6 +207,10 @@ export default function HomeScreen() {
     if (selectedMode === "Focus") {
       setSecondsLeft(nextDurationMinutes * 60);
     }
+
+    setSessionStartTime(null);
+    setHasHandledCompletion(false);
+    resetFiveMinuteWarning();
   }
 
   function decreaseFocusDuration() {
@@ -112,6 +219,31 @@ export default function HomeScreen() {
 
   function increaseFocusDuration() {
     updateFocusDuration(focusDurationMinutes + focusStepMinutes);
+  }
+
+  function startTimer() {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    if (secondsLeft === 0) {
+      setSecondsLeft(currentModeDurations[selectedMode]);
+    }
+    setSessionStartTime((currentStartTime) => currentStartTime ?? new Date());
+    setHasHandledCompletion(false);
+    resetFiveMinuteWarning();
+    setIsRunning(true);
+  }
+
+  function pauseTimer() {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setIsRunning(false);
+  }
+
+  function addCustomActivity() {
+    const activity = addActivity(newActivityName);
+
+    if (activity) {
+      setSelectedActivityId(activity.id);
+      setNewActivityName("");
+    }
   }
 
   const totalSeconds = currentModeDurations[selectedMode];
@@ -124,30 +256,80 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.contentArea}>
-          <View style={styles.statsCard}>
-            <View style={styles.statBlock}>
-              <Text style={styles.statLabel}>Total Focus</Text>
-              <Text style={styles.statValue}>{formatStatDuration(totalFocusSeconds)}</Text>
-            </View>
-
-            <View style={styles.statDivider} />
-
-            <View style={styles.statBlock}>
-              <Text style={styles.statLabel}>Break Time</Text>
-              <Text style={styles.statValue}>{formatStatDuration(totalBreakSeconds)}</Text>
-            </View>
-
-            <View style={styles.statDivider} />
-
-            <View style={styles.statBlock}>
-              <Text style={styles.statLabel}>Sessions</Text>
-              <Text style={styles.sessionCount}>{completedFocusSessions}</Text>
-            </View>
-          </View>
-
           <View style={styles.timerCard}>
+            <View style={styles.activityRow}>
+              {activities.map((activity) => {
+                const isSelected = activity.id === selectedActivityId;
+
+                return (
+                  <Pressable
+                    key={activity.id}
+                    disabled={isRunning}
+                    style={({ pressed }) => [
+                      styles.activityButton,
+                      isSelected && [
+                        styles.selectedActivityButton,
+                        {
+                          borderColor: activity.color,
+                          shadowColor: activity.color,
+                        },
+                      ],
+                      isRunning && styles.disabledDurationButton,
+                      pressed && !isRunning && styles.pressedButton,
+                    ]}
+                    onPress={() => setSelectedActivityId(activity.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.activityButtonText,
+                        isSelected && [
+                          styles.selectedActivityButtonText,
+                          { color: activity.color },
+                        ],
+                        isRunning && styles.inactiveButtonText,
+                      ]}
+                    >
+                      {activity.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.addActivityRow}>
+              <TextInput
+                editable={!isRunning}
+                value={newActivityName}
+                onChangeText={setNewActivityName}
+                placeholder="Add activity"
+                placeholderTextColor="#687382"
+                style={[
+                  styles.activityInput,
+                  isRunning && styles.disabledActivityInput,
+                ]}
+              />
+              <Pressable
+                disabled={isRunning || !newActivityName.trim()}
+                style={({ pressed }) => [
+                  styles.addActivityButton,
+                  (isRunning || !newActivityName.trim()) && styles.disabledDurationButton,
+                  pressed && !isRunning && newActivityName.trim() && styles.pressedButton,
+                ]}
+                onPress={addCustomActivity}
+              >
+                <Text
+                  style={[
+                    styles.addActivityButtonText,
+                    (isRunning || !newActivityName.trim()) && styles.inactiveButtonText,
+                  ]}
+                >
+                  Add
+                </Text>
+              </Pressable>
+            </View>
+
             <View style={styles.modeRow}>
               {timerModes.map((mode) => {
                 const isSelected = mode === selectedMode;
@@ -319,6 +501,9 @@ export default function HomeScreen() {
                 <Text style={styles.timerText}>{formatTime(secondsLeft)}</Text>
               </View>
             </View>
+            {warningMessage ? (
+              <Text style={styles.warningMessage}>{warningMessage}</Text>
+            ) : null}
           </View>
         </View>
 
@@ -330,7 +515,7 @@ export default function HomeScreen() {
               isRunning ? styles.startButtonInactive : styles.startButton,
               pressed && !isRunning && styles.pressedButton,
             ]}
-            onPress={() => setIsRunning(true)}
+            onPress={startTimer}
           >
             <Text
               style={[
@@ -349,7 +534,7 @@ export default function HomeScreen() {
               isRunning ? styles.pauseButtonActive : styles.pauseButtonInactive,
               pressed && isRunning && styles.pressedButton,
             ]}
-            onPress={() => setIsRunning(false)}
+            onPress={pauseTimer}
           >
             <Text
               style={[
@@ -372,7 +557,7 @@ export default function HomeScreen() {
             <Text style={styles.actionButtonText}>Reset</Text>
           </Pressable>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -383,58 +568,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#030507",
   },
   container: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: 20,
     paddingTop: 28,
-    paddingBottom: 28,
+    paddingBottom: 96,
     alignItems: "center",
     justifyContent: "space-between",
   },
   contentArea: {
     width: "100%",
     alignItems: "center",
-  },
-  statsCard: {
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    borderRadius: 22,
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    backgroundColor: "#12171F",
-    borderWidth: 1,
-    borderColor: "#242B36",
-    marginBottom: 16,
-    shadowColor: "#000000",
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
-  },
-  statBlock: {
-    flex: 1,
-    alignItems: "center",
-  },
-  statDivider: {
-    width: 1,
-    height: 34,
-    backgroundColor: "#26313D",
-  },
-  statLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#9BA4B0",
-    marginBottom: 6,
-  },
-  statValue: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  sessionCount: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#BDFB5A",
   },
   timerCard: {
     width: "100%",
@@ -451,6 +594,77 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.16,
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 14 },
+  },
+  activityRow: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 12,
+  },
+  activityButton: {
+    minWidth: "30%",
+    borderRadius: 999,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    backgroundColor: "#10151C",
+    borderWidth: 1,
+    borderColor: "#2A3442",
+  },
+  selectedActivityButton: {
+    backgroundColor: "#1A3642",
+    borderColor: "#6BE7FF",
+    shadowColor: "#6BE7FF",
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  activityButtonText: {
+    color: "#9BA4B0",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  selectedActivityButtonText: {
+    color: "#FFFFFF",
+  },
+  addActivityRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  activityInput: {
+    flex: 1,
+    height: 42,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    color: "#FFFFFF",
+    backgroundColor: "#10151C",
+    borderWidth: 1,
+    borderColor: "#2A3442",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  disabledActivityInput: {
+    color: "#687382",
+    backgroundColor: "#111821",
+    borderColor: "#26313D",
+  },
+  addActivityButton: {
+    height: 42,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#143B34",
+    borderWidth: 1,
+    borderColor: "#5EF4CE",
+  },
+  addActivityButtonText: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "800",
   },
   modeRow: {
     width: "100%",
@@ -652,6 +866,12 @@ const styles = StyleSheet.create({
     fontSize: 62,
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+  warningMessage: {
+    marginTop: 12,
+    color: "#BDFB5A",
+    fontSize: 14,
+    fontWeight: "700",
   },
   buttonRow: {
     width: "100%",
