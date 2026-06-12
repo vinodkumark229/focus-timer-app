@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { setAudioModeAsync, useAudioPlayer } from "expo-audio";
+import { setAudioModeAsync, setIsAudioActiveAsync, useAudioPlayer } from "expo-audio";
 import * as Haptics from "expo-haptics";
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -19,8 +19,9 @@ const progressSegments = Array.from({ length: 120 }, (_, index) => index);
 const minimumFocusMinutes = 1;
 const maximumFocusMinutes = 180;
 const focusStepMinutes = 5;
-// Add assets/sounds/timer-bell.mp3 later if you want to replace this WAV fallback.
-const alertSound = require("@/assets/sounds/timer-bell.wav");
+const requestedBellSoundPath = "assets/sounds/timer-bell.mp3";
+// Metro requires audio assets at build time. The requested MP3 is missing, so this bundled WAV keeps the app safe.
+const completionSound = require("@/assets/sounds/timer-bell.wav");
 
 function formatTime(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
@@ -31,7 +32,7 @@ function formatTime(totalSeconds: number) {
 
 export default function HomeScreen() {
   const { activities, addActivity, addBreakSeconds, addSession } = useSessionHistory();
-  const alertPlayer = useAudioPlayer(alertSound);
+  const completionSoundPlayer = useAudioPlayer(completionSound);
   const warningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedMode, setSelectedMode] = useState<TimerMode>("Focus");
   const [selectedActivityId, setSelectedActivityId] = useState("deep-work");
@@ -55,14 +56,22 @@ export default function HomeScreen() {
   ) ?? activities[0];
 
   useEffect(() => {
-    void setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+    completionSoundPlayer.volume = 1;
+    console.warn(
+      `${requestedBellSoundPath} was not found. Using assets/sounds/timer-bell.wav until you add the MP3 asset.`,
+    );
+    void setAudioModeAsync({ playsInSilentMode: true })
+      .then(() => setIsAudioActiveAsync(true))
+      .catch((error) => {
+        console.warn("Completion sound setup failed", error);
+      });
 
     return () => {
       if (warningTimeoutRef.current) {
         clearTimeout(warningTimeoutRef.current);
       }
     };
-  }, []);
+  }, [completionSoundPlayer]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -132,20 +141,25 @@ export default function HomeScreen() {
   }
 
   async function playAlertSound() {
+    console.log("Playing completion sound");
+
     try {
-      await alertPlayer.seekTo(0);
-      alertPlayer.play();
-    } catch {
-      // Sound is best-effort so the timer never crashes if audio is unavailable.
+      completionSoundPlayer.pause();
+      await completionSoundPlayer.seekTo(0);
+      completionSoundPlayer.volume = 1;
+      completionSoundPlayer.play();
+    } catch (error) {
+      console.warn("Completion sound failed", error);
     }
   }
 
   async function playTimerCompleteFeedback() {
-    await playAlertSound();
+    void playAlertSound();
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   }
 
   function handleTimerComplete() {
+    console.log("Timer completed");
     setIsRunning(false);
     setHasShownFiveMinuteWarning(false);
     clearWarningMessage();
