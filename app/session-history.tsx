@@ -1,4 +1,13 @@
-import { createContext, PropsWithChildren, useCallback, useContext, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  createContext,
+  PropsWithChildren,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 export type Activity = {
   id: string;
@@ -27,6 +36,17 @@ type SessionHistoryContextValue = {
   addSession: (session: FocusSession) => void;
 };
 
+type StoredFocusSession = Omit<FocusSession, "startTime" | "endTime"> & {
+  startTime: string;
+  endTime: string;
+};
+
+type StoredSessionHistory = {
+  activities: Activity[];
+  sessions: StoredFocusSession[];
+  breakSeconds: number;
+};
+
 const defaultActivities: Activity[] = [
   { id: "deep-work", name: "Deep Work", color: "#5EF4CE" },
   { id: "learning", name: "Learning", color: "#8EA7FF" },
@@ -34,9 +54,71 @@ const defaultActivities: Activity[] = [
 ];
 
 const customActivityColors = ["#BDFB5A", "#7DF9FF", "#C084FC", "#F472B6", "#60A5FA"];
+const sessionHistoryStorageKey = "focus-timer-session-history-v1";
 
 function createActivityId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function isActivity(value: unknown): value is Activity {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const activity = value as Activity;
+
+  return (
+    typeof activity.id === "string" &&
+    typeof activity.name === "string" &&
+    typeof activity.color === "string"
+  );
+}
+
+function isStoredSession(value: unknown): value is StoredFocusSession {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const session = value as StoredFocusSession;
+
+  return (
+    typeof session.id === "string" &&
+    typeof session.activityName === "string" &&
+    typeof session.activityColor === "string" &&
+    typeof session.startTime === "string" &&
+    typeof session.endTime === "string" &&
+    typeof session.durationSeconds === "number" &&
+    typeof session.durationMinutes === "number" &&
+    typeof session.dateLabel === "string" &&
+    session.mode === "Focus"
+  );
+}
+
+function reviveStoredSession(session: StoredFocusSession): FocusSession | null {
+  const startTime = new Date(session.startTime);
+  const endTime = new Date(session.endTime);
+
+  if (Number.isNaN(startTime.getTime()) || Number.isNaN(endTime.getTime())) {
+    return null;
+  }
+
+  return {
+    ...session,
+    startTime,
+    endTime,
+  };
+}
+
+function mergeWithDefaultActivities(savedActivities: Activity[]) {
+  const customActivities = savedActivities.filter(
+    (activity) =>
+      !defaultActivities.some(
+        (defaultActivity) =>
+          defaultActivity.name.toLowerCase() === activity.name.toLowerCase(),
+      ),
+  );
+
+  return [...defaultActivities, ...customActivities];
 }
 
 const SessionHistoryContext = createContext<SessionHistoryContextValue | null>(null);
@@ -45,6 +127,68 @@ export function SessionHistoryProvider({ children }: PropsWithChildren) {
   const [activities, setActivities] = useState<Activity[]>(defaultActivities);
   const [sessions, setSessions] = useState<FocusSession[]>([]);
   const [breakSeconds, setBreakSeconds] = useState(0);
+  const [hasLoadedStoredData, setHasLoadedStoredData] = useState(false);
+
+  useEffect(() => {
+    async function loadStoredData() {
+      try {
+        const storedValue = await AsyncStorage.getItem(sessionHistoryStorageKey);
+
+        if (!storedValue) {
+          return;
+        }
+
+        const parsedValue = JSON.parse(storedValue) as Partial<StoredSessionHistory>;
+
+        if (Array.isArray(parsedValue.activities)) {
+          const validActivities = parsedValue.activities.filter(isActivity);
+          setActivities(mergeWithDefaultActivities(validActivities));
+        }
+
+        if (Array.isArray(parsedValue.sessions)) {
+          const validSessions = parsedValue.sessions
+            .filter(isStoredSession)
+            .map(reviveStoredSession)
+            .filter((session): session is FocusSession => session !== null);
+
+          setSessions(validSessions);
+        }
+
+        if (typeof parsedValue.breakSeconds === "number" && parsedValue.breakSeconds >= 0) {
+          setBreakSeconds(parsedValue.breakSeconds);
+        }
+      } catch {
+        setActivities(defaultActivities);
+        setSessions([]);
+        setBreakSeconds(0);
+      } finally {
+        setHasLoadedStoredData(true);
+      }
+    }
+
+    void loadStoredData();
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedStoredData) {
+      return;
+    }
+
+    const storedData: StoredSessionHistory = {
+      activities,
+      sessions: sessions.map((session) => ({
+        ...session,
+        startTime: session.startTime.toISOString(),
+        endTime: session.endTime.toISOString(),
+      })),
+      breakSeconds,
+    };
+
+    void AsyncStorage.setItem(
+      sessionHistoryStorageKey,
+      JSON.stringify(storedData),
+    ).catch(() => {});
+  }, [activities, breakSeconds, hasLoadedStoredData, sessions]);
 
   const addActivity = useCallback((name: string) => {
     const trimmedName = name.trim();
