@@ -7,18 +7,24 @@ import { useSessionHistory } from "@/app/session-history";
 
 type TimerMode = "Focus" | "Short Break" | "Long Break";
 
-const modeDurations: Record<TimerMode, number> = {
-  Focus: 60 * 60,
-  "Short Break": 5 * 60,
-  "Long Break": 15 * 60,
-};
-
 const timerModes: TimerMode[] = ["Focus", "Short Break", "Long Break"];
-const focusDurationPresets = [15, 30, 45, 60, 90, 120];
+const durationPresets: Record<TimerMode, number[]> = {
+  Focus: [15, 30, 45, 60, 90, 120],
+  "Short Break": [1, 5, 10, 15, 20, 30],
+  "Long Break": [5, 10, 15, 20, 30, 45],
+};
+const durationLabels: Record<TimerMode, string> = {
+  Focus: "Focus duration",
+  "Short Break": "Short break duration",
+  "Long Break": "Long break duration",
+};
+const durationLimits: Record<TimerMode, { min: number; max: number }> = {
+  Focus: { min: 1, max: 180 },
+  "Short Break": { min: 1, max: 60 },
+  "Long Break": { min: 1, max: 60 },
+};
 const progressSegments = Array.from({ length: 120 }, (_, index) => index);
-const minimumFocusMinutes = 1;
-const maximumFocusMinutes = 180;
-const focusStepMinutes = 5;
+const durationStepMinutes = 5;
 const requestedBellSoundPath = "assets/sounds/timer-bell.mp3";
 // Metro requires audio assets at build time. The requested MP3 is missing, so this bundled WAV keeps the app safe.
 const completionSound = require("@/assets/sounds/timer-bell.wav");
@@ -37,9 +43,16 @@ export default function HomeScreen() {
   const [selectedMode, setSelectedMode] = useState<TimerMode>("Focus");
   const [selectedActivityId, setSelectedActivityId] = useState("deep-work");
   const [newActivityName, setNewActivityName] = useState("");
-  const [focusDurationMinutes, setFocusDurationMinutes] = useState(60);
-  const focusDurationSeconds = focusDurationMinutes * 60;
-  const [secondsLeft, setSecondsLeft] = useState(focusDurationSeconds);
+  const [modeDurationMinutes, setModeDurationMinutes] = useState<Record<TimerMode, number>>({
+    Focus: 60,
+    "Short Break": 5,
+    "Long Break": 15,
+  });
+  const selectedDurationMinutes = modeDurationMinutes[selectedMode];
+  const selectedDurationLimit = durationLimits[selectedMode];
+  const selectedDurationPresets = durationPresets[selectedMode];
+  const selectedDurationSeconds = selectedDurationMinutes * 60;
+  const [secondsLeft, setSecondsLeft] = useState(selectedDurationSeconds);
   const [isRunning, setIsRunning] = useState(false);
   const [hasShownFiveMinuteWarning, setHasShownFiveMinuteWarning] = useState(false);
   const [warningMessage, setWarningMessage] = useState("");
@@ -47,13 +60,14 @@ export default function HomeScreen() {
   const [hasHandledCompletion, setHasHandledCompletion] = useState(false);
 
   const currentModeDurations: Record<TimerMode, number> = {
-    Focus: focusDurationSeconds,
-    "Short Break": modeDurations["Short Break"],
-    "Long Break": modeDurations["Long Break"],
+    Focus: modeDurationMinutes.Focus * 60,
+    "Short Break": modeDurationMinutes["Short Break"] * 60,
+    "Long Break": modeDurationMinutes["Long Break"] * 60,
   };
   const selectedActivity = activities.find(
     (activity) => activity.id === selectedActivityId,
   ) ?? activities[0];
+  const timerRingLabel = selectedMode === "Focus" ? selectedActivity.name : selectedMode;
 
   useEffect(() => {
     completionSoundPlayer.volume = 1;
@@ -95,13 +109,13 @@ export default function HomeScreen() {
     if (
       isRunning &&
       secondsLeft === 300 &&
-      currentModeDurations[selectedMode] > 300 &&
+      selectedDurationSeconds > 300 &&
       !hasShownFiveMinuteWarning
     ) {
       setHasShownFiveMinuteWarning(true);
       showFiveMinuteWarning();
     }
-  }, [hasShownFiveMinuteWarning, isRunning, secondsLeft, selectedMode]);
+  }, [hasShownFiveMinuteWarning, isRunning, secondsLeft, selectedDurationSeconds]);
 
   useEffect(() => {
     if (!isRunning || secondsLeft !== 0 || hasHandledCompletion) {
@@ -210,29 +224,29 @@ export default function HomeScreen() {
     resetFiveMinuteWarning();
   }
 
-  function updateFocusDuration(durationMinutes: number) {
+  function updateSelectedModeDuration(durationMinutes: number) {
     const nextDurationMinutes = Math.min(
-      maximumFocusMinutes,
-      Math.max(minimumFocusMinutes, durationMinutes),
+      selectedDurationLimit.max,
+      Math.max(selectedDurationLimit.min, durationMinutes),
     );
 
-    setFocusDurationMinutes(nextDurationMinutes);
-
-    if (selectedMode === "Focus") {
-      setSecondsLeft(nextDurationMinutes * 60);
-    }
+    setModeDurationMinutes((currentDurations) => ({
+      ...currentDurations,
+      [selectedMode]: nextDurationMinutes,
+    }));
+    setSecondsLeft(nextDurationMinutes * 60);
 
     setSessionStartTime(null);
     setHasHandledCompletion(false);
     resetFiveMinuteWarning();
   }
 
-  function decreaseFocusDuration() {
-    updateFocusDuration(focusDurationMinutes - focusStepMinutes);
+  function decreaseSelectedModeDuration() {
+    updateSelectedModeDuration(selectedDurationMinutes - durationStepMinutes);
   }
 
-  function increaseFocusDuration() {
-    updateFocusDuration(focusDurationMinutes + focusStepMinutes);
+  function increaseSelectedModeDuration() {
+    updateSelectedModeDuration(selectedDurationMinutes + durationStepMinutes);
   }
 
   function startTimer() {
@@ -371,25 +385,25 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.focusDurationCard}>
-              <Text style={styles.focusDurationLabel}>Focus duration</Text>
+              <Text style={styles.focusDurationLabel}>{durationLabels[selectedMode]}</Text>
               <View style={styles.durationStepper}>
                 <Pressable
-                  disabled={isRunning || focusDurationMinutes === minimumFocusMinutes}
+                  disabled={isRunning || selectedDurationMinutes === selectedDurationLimit.min}
                   style={({ pressed }) => [
                     styles.stepperButton,
-                    (isRunning || focusDurationMinutes === minimumFocusMinutes) &&
+                    (isRunning || selectedDurationMinutes === selectedDurationLimit.min) &&
                       styles.disabledDurationButton,
                     pressed &&
                       !isRunning &&
-                      focusDurationMinutes !== minimumFocusMinutes &&
+                      selectedDurationMinutes !== selectedDurationLimit.min &&
                       styles.pressedButton,
                   ]}
-                  onPress={decreaseFocusDuration}
+                  onPress={decreaseSelectedModeDuration}
                 >
                   <Text
                     style={[
                       styles.stepperButtonText,
-                      (isRunning || focusDurationMinutes === minimumFocusMinutes) &&
+                      (isRunning || selectedDurationMinutes === selectedDurationLimit.min) &&
                         styles.inactiveButtonText,
                     ]}
                   >
@@ -409,7 +423,7 @@ export default function HomeScreen() {
                       isRunning && styles.inactiveButtonText,
                     ]}
                   >
-                    {focusDurationMinutes}
+                    {selectedDurationMinutes}
                   </Text>
                   <Text
                     style={[
@@ -422,22 +436,22 @@ export default function HomeScreen() {
                 </View>
 
                 <Pressable
-                  disabled={isRunning || focusDurationMinutes === maximumFocusMinutes}
+                  disabled={isRunning || selectedDurationMinutes === selectedDurationLimit.max}
                   style={({ pressed }) => [
                     styles.stepperButton,
-                    (isRunning || focusDurationMinutes === maximumFocusMinutes) &&
+                    (isRunning || selectedDurationMinutes === selectedDurationLimit.max) &&
                       styles.disabledDurationButton,
                     pressed &&
                       !isRunning &&
-                      focusDurationMinutes !== maximumFocusMinutes &&
+                      selectedDurationMinutes !== selectedDurationLimit.max &&
                       styles.pressedButton,
                   ]}
-                  onPress={increaseFocusDuration}
+                  onPress={increaseSelectedModeDuration}
                 >
                   <Text
                     style={[
                       styles.stepperButtonText,
-                      (isRunning || focusDurationMinutes === maximumFocusMinutes) &&
+                      (isRunning || selectedDurationMinutes === selectedDurationLimit.max) &&
                         styles.inactiveButtonText,
                     ]}
                   >
@@ -447,8 +461,8 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.presetRow}>
-                {focusDurationPresets.map((durationMinutes) => {
-                  const isSelected = durationMinutes === focusDurationMinutes;
+                {selectedDurationPresets.map((durationMinutes) => {
+                  const isSelected = durationMinutes === selectedDurationMinutes;
 
                   return (
                     <Pressable
@@ -460,7 +474,7 @@ export default function HomeScreen() {
                         isRunning && styles.disabledDurationButton,
                         pressed && !isRunning && styles.pressedButton,
                       ]}
-                      onPress={() => updateFocusDuration(durationMinutes)}
+                      onPress={() => updateSelectedModeDuration(durationMinutes)}
                     >
                       <Text
                         style={[
@@ -511,7 +525,7 @@ export default function HomeScreen() {
             />
 
             <View style={styles.timerCircle}>
-                <Text style={styles.modeLabel}>{selectedMode}</Text>
+                <Text style={styles.modeLabel}>{timerRingLabel}</Text>
                 <Text style={styles.timerText}>{formatTime(secondsLeft)}</Text>
               </View>
             </View>
